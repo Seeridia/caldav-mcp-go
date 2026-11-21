@@ -39,4 +39,5 @@ jobs:
       - name: Record the image for Dokploy
         env:
           DIGEST: ${{ steps.publish.outputs.digest }}
-        run: printf 'Image to deploy in Dokploy: `%s@%s`\n' "$IMAGE" "$DIGEST" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          printf 'Image to deploy in Dokploy: `%s@%s`\n' "$IMAGE" "$DIGEST" >> "$GITHUB_STEP_SUMMARY"
