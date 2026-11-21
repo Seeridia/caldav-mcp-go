@@ -19,6 +19,8 @@ import (
 	dav "github.com/emersion/go-webdav/caldav"
 )
 
+var errReportPrecondition = errors.New("CalDAV REPORT returned HTTP 412")
+
 type Client struct {
 	dav    *dav.Client
 	http   webdav.HTTPClient
@@ -43,7 +45,7 @@ func New(endpoint, username, password string, zone *time.Location) (*Client, err
 		},
 	}
 	authenticated := webdav.HTTPClientWithBasicAuth(httpClient, username, password)
-	client, err := dav.NewClient(authenticated, base.String())
+	client, err := dav.NewClient(reportClient{authenticated}, base.String())
 	if err != nil {
 		return nil, errors.New("invalid CalDAV endpoint")
 	}
@@ -51,6 +53,19 @@ func New(endpoint, username, password string, zone *time.Location) (*Client, err
 		dav: client, http: authenticated, zone: zone,
 		origin: url.URL{Scheme: base.Scheme, Host: base.Host},
 	}, nil
+}
+
+type reportClient struct {
+	webdav.HTTPClient
+}
+
+func (c reportClient) Do(req *http.Request) (*http.Response, error) {
+	res, err := c.HTTPClient.Do(req)
+	if err == nil && req.Method == "REPORT" && res.StatusCode == http.StatusPreconditionFailed {
+		res.Body.Close()
+		return nil, errReportPrecondition
+	}
+	return res, err
 }
 
 func (c *Client) Calendars(ctx context.Context) ([]calendar.Calendar, error) {
@@ -109,7 +124,7 @@ func (c *Client) Occurrences(ctx context.Context, id string, start, end time.Tim
 		Name: ical.CompEvent, Start: from, End: to,
 	}, &dav.CalendarExpandRequest{Start: from, End: to})
 	if err != nil {
-		return nil, err
+		return nil, backend("query events", err)
 	}
 	result := []calendar.Occurrence{}
 	for _, object := range objects {
@@ -133,34 +148,32 @@ func (c *Client) Occurrences(ctx context.Context, id string, start, end time.Tim
 }
 
 func (c *Client) query(ctx context.Context, collection string, filter dav.CompFilter, expand *dav.CalendarExpandRequest) ([]dav.CalendarObject, error) {
-	objects, err := c.dav.QueryCalendar(ctx, collection, &dav.CalendarQuery{
+	return c.dav.QueryCalendar(ctx, collection, &dav.CalendarQuery{
 		CompRequest: dav.CalendarCompRequest{Name: ical.CompCalendar, AllProps: true, AllComps: true, Expand: expand},
 		CompFilter:  dav.CompFilter{Name: ical.CompCalendar, Comps: []dav.CompFilter{filter}},
 	})
-	if err != nil {
-		return nil, backend("query events", err)
-	}
-	return objects, nil
 }
 
-func (c *Client) find(ctx context.Context, ref calendar.EventRef) (string, error) {
-	if strings.TrimSpace(ref.UID) == "" {
-		return "", errors.New("uid is required")
-	}
-	collection, err := c.calendarPath(ctx, ref.CalendarID)
-	if err != nil {
-		return "", err
-	}
+func (c *Client) find(ctx context.Context, collection, uid string) (string, error) {
 	objects, err := c.query(ctx, collection, dav.CompFilter{
 		Name:  ical.CompEvent,
-		Props: []dav.PropFilter{{Name: ical.PropUID, TextMatch: &dav.TextMatch{Text: ref.UID}}},
+		Props: []dav.PropFilter{{Name: ical.PropUID, TextMatch: &dav.TextMatch{Text: uid}}},
 	}, nil)
+	if errors.Is(err, errReportPrecondition) {
+		// Some servers (including iCloud) do not support UID text filtering.
+		objects, err = c.dav.QueryCalendar(ctx, collection, &dav.CalendarQuery{
+			CompRequest: dav.CalendarCompRequest{Name: ical.CompCalendar, Comps: []dav.CalendarCompRequest{
+				{Name: ical.CompEvent, Props: []string{ical.PropUID}},
+			}},
+			CompFilter: dav.CompFilter{Name: ical.CompCalendar, Comps: []dav.CompFilter{{Name: ical.CompEvent}}},
+		})
+	}
 	if err != nil {
-		return "", err
+		return "", backend("query events by UID", err)
 	}
 	for _, object := range objects {
 		for _, event := range object.Data.Events() {
-			if text(event.Props, ical.PropUID) == ref.UID {
+			if text(event.Props, ical.PropUID) == uid {
 				if path.Dir(object.Path) != path.Clean(collection) || path.Clean(object.Path) != object.Path {
 					return "", fmt.Errorf("%w: event resource is outside its calendar", calendar.ErrBackend)
 				}
@@ -220,11 +233,30 @@ type eventResource struct {
 }
 
 func (c *Client) load(ctx context.Context, ref calendar.EventRef) (eventResource, error) {
-	var out eventResource
-	resourcePath, err := c.find(ctx, ref)
-	if err != nil {
-		return out, err
+	if strings.TrimSpace(ref.UID) == "" {
+		return eventResource{}, errors.New("uid is required")
 	}
+	collection, err := c.calendarPath(ctx, ref.CalendarID)
+	if err != nil {
+		return eventResource{}, err
+	}
+	if !strings.ContainsAny(ref.UID, "/\\") {
+		// New resources and many existing calendars use UID.ics as the path.
+		// readEvent verifies the UID before callers can update or delete it.
+		event, err := c.readEvent(ctx, path.Join(collection, ref.UID+".ics"), ref.UID)
+		if !errors.Is(err, calendar.ErrNotFound) {
+			return event, err
+		}
+	}
+	resourcePath, err := c.find(ctx, collection, ref.UID)
+	if err != nil {
+		return eventResource{}, err
+	}
+	return c.readEvent(ctx, resourcePath, ref.UID)
+}
+
+func (c *Client) readEvent(ctx context.Context, resourcePath, uid string) (eventResource, error) {
+	var out eventResource
 	res, err := c.resource(ctx, http.MethodGet, resourcePath, "", nil)
 	if err != nil {
 		return out, err
@@ -235,7 +267,7 @@ func (c *Client) load(ctx context.Context, ref calendar.EventRef) (eventResource
 		return out, backend("decode event", err)
 	}
 	for _, event := range document.Events() {
-		if text(event.Props, ical.PropUID) == ref.UID && event.Props.Get(ical.PropRecurrenceID) == nil {
+		if text(event.Props, ical.PropUID) == uid && event.Props.Get(ical.PropRecurrenceID) == nil {
 			return eventResource{document: document, event: event, path: resourcePath, etag: res.Header.Get("ETag")}, nil
 		}
 	}
