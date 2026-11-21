@@ -160,13 +160,7 @@ func (c *Client) find(ctx context.Context, collection, uid string) (string, erro
 		Props: []dav.PropFilter{{Name: ical.PropUID, TextMatch: &dav.TextMatch{Text: uid}}},
 	}, nil)
 	if errors.Is(err, errReportPrecondition) {
-		// Some servers (including iCloud) do not support UID text filtering.
-		objects, err = c.dav.QueryCalendar(ctx, collection, &dav.CalendarQuery{
-			CompRequest: dav.CalendarCompRequest{Name: ical.CompCalendar, Comps: []dav.CalendarCompRequest{
-				{Name: ical.CompEvent, Props: []string{ical.PropUID}},
-			}},
-			CompFilter: dav.CompFilter{Name: ical.CompCalendar, Comps: []dav.CompFilter{{Name: ical.CompEvent}}},
-		})
+		return c.findWithoutUIDFilter(ctx, collection, uid)
 	}
 	if err != nil {
 		return "", backend("query events by UID", err)
