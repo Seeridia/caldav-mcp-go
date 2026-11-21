@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"path"
 	"slices"
@@ -119,29 +120,56 @@ func (c *Client) eventTimes(event ical.Event) (calendar.EventTime, calendar.Even
 	start.AllDay = first.ValueType() == ical.ValueDate || len(first.Value) == 8
 	end.AllDay = start.AllDay
 	var err error
-	start.Time, err = first.DateTime(c.zone)
+	start.Time, err = decodeDateTime(first, c.zone)
 	if err != nil {
 		return start, end, backend("decode event start", err)
 	}
-	end.Time, err = event.DateTimeEnd(c.zone)
-	if err != nil {
-		return start, end, backend("decode event end", err)
-	}
-	if start.AllDay && event.Props.Get(ical.PropDateTimeEnd) == nil {
-		days := 1
+	if prop := event.Props.Get(ical.PropDateTimeEnd); prop != nil {
+		end.Time, err = decodeDateTime(prop, c.zone)
+		if err != nil {
+			return start, end, backend("decode event end", err)
+		}
+	} else {
+		var duration time.Duration
 		if prop := event.Props.Get(ical.PropDuration); prop != nil {
-			duration, err := prop.Duration()
-			if err != nil || duration < 0 || duration%(24*time.Hour) != 0 {
+			duration, err = prop.Duration()
+			if err != nil {
+				return start, end, backend("decode event duration", err)
+			}
+		} else if start.AllDay {
+			duration = 24 * time.Hour
+		}
+		if start.AllDay {
+			if duration < 0 || duration%(24*time.Hour) != 0 {
 				return start, end, fmt.Errorf("%w: invalid all-day duration", calendar.ErrBackend)
 			}
-			days = int(duration / (24 * time.Hour))
+			end.Time = start.AddDate(0, 0, int(duration/(24*time.Hour)))
+		} else {
+			end.Time = start.Add(duration)
 		}
-		end.Time = start.AddDate(0, 0, days)
 	}
 	if end.Before(start.Time) {
 		return start, end, fmt.Errorf("%w: event ends before it starts", calendar.ErrBackend)
 	}
 	return start, end, nil
+}
+
+func decodeDateTime(prop *ical.Prop, fallback *time.Location) (time.Time, error) {
+	tzid := prop.Params.Get(ical.PropTimezoneID)
+	if offset, ok := strings.CutPrefix(tzid, "UTC"); ok {
+		if parsed, err := time.Parse("-07:00", offset); err == nil {
+			_, seconds := parsed.Zone()
+			if seconds > -86400 && seconds < 86400 && (parsed.Format("-07:00") == offset || offset == "-00:00") {
+				// The legacy writer stored numeric offsets as TZIDs. Decode a
+				// copy so unrelated writes preserve the original property.
+				local := *prop
+				local.Params = maps.Clone(prop.Params)
+				local.Params.Del(ical.PropTimezoneID)
+				return local.DateTime(time.FixedZone(tzid, seconds))
+			}
+		}
+	}
+	return prop.DateTime(fallback)
 }
 
 func (c *Client) decodeEvent(id string, event ical.Event) (calendar.Occurrence, error) {
@@ -156,7 +184,7 @@ func (c *Client) decodeEvent(id string, event ical.Event) (calendar.Occurrence, 
 	status := strings.ToUpper(raw(event.Props, ical.PropStatus))
 	recurrence := ""
 	if prop := event.Props.Get(ical.PropRecurrenceID); prop != nil {
-		occurrence, err := prop.DateTime(c.zone)
+		occurrence, err := decodeDateTime(prop, c.zone)
 		if err != nil {
 			return calendar.Occurrence{}, backend("decode recurrence ID", err)
 		}
