@@ -120,21 +120,23 @@ func (c *Client) Occurrences(ctx context.Context, id string, start, end time.Tim
 	// DATE and floating DATE-TIME can use different time zones on the
 	// server. Widen discovery and apply the exact window locally.
 	from, to := start.UTC().Add(-24*time.Hour), end.UTC().Add(24*time.Hour)
-	objects, err := c.query(ctx, id, dav.CompFilter{
-		Name: ical.CompEvent, Start: from, End: to,
-	}, &dav.CalendarExpandRequest{Start: from, End: to})
-	if err != nil {
-		return nil, backend("query events", err)
-	}
+	// Request expansion without an allprop/allcomp selector. iCloud silently
+	// omits matching events when that selector accompanies a time range.
+	const report = `<c:calendar-query xmlns:c="urn:ietf:params:xml:ns:caldav" xmlns:d="DAV:">
+<d:prop><c:calendar-data><c:expand start="%s" end="%s"/></c:calendar-data></d:prop>
+<c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT"><c:time-range start="%s" end="%s"/></c:comp-filter></c:comp-filter></c:filter>
+</c:calendar-query>`
+	const layout = "20060102T150405Z"
+	first, last := from.Format(layout), to.Format(layout)
 	result := []calendar.Occurrence{}
-	for _, object := range objects {
-		for _, event := range object.Data.Events() {
+	err := c.readCalendarReport(ctx, id, fmt.Sprintf(report, first, last, first, last), func(_ string, document *ical.Calendar) (bool, error) {
+		for _, event := range document.Events() {
 			if isSeries(event) {
-				return nil, fmt.Errorf("%w: server did not expand a recurring event", calendar.ErrBackend)
+				return false, fmt.Errorf("%w: server did not expand a recurring event", calendar.ErrBackend)
 			}
 			occurrence, err := c.decodeEvent(id, event)
 			if err != nil {
-				return nil, err
+				return false, err
 			}
 			overlaps := occurrence.StartsAt.Before(end) && occurrence.EndsAt.After(start)
 			instant := occurrence.StartsAt.Equal(occurrence.EndsAt) &&
@@ -143,22 +145,22 @@ func (c *Client) Occurrences(ctx context.Context, id string, start, end time.Tim
 				result = append(result, occurrence)
 			}
 		}
+		return false, nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return result, nil
 }
 
-func (c *Client) query(ctx context.Context, collection string, filter dav.CompFilter, expand *dav.CalendarExpandRequest) ([]dav.CalendarObject, error) {
-	return c.dav.QueryCalendar(ctx, collection, &dav.CalendarQuery{
-		CompRequest: dav.CalendarCompRequest{Name: ical.CompCalendar, AllProps: true, AllComps: true, Expand: expand},
-		CompFilter:  dav.CompFilter{Name: ical.CompCalendar, Comps: []dav.CompFilter{filter}},
-	})
-}
-
 func (c *Client) find(ctx context.Context, collection, uid string) (string, error) {
-	objects, err := c.query(ctx, collection, dav.CompFilter{
-		Name:  ical.CompEvent,
-		Props: []dav.PropFilter{{Name: ical.PropUID, TextMatch: &dav.TextMatch{Text: uid}}},
-	}, nil)
+	objects, err := c.dav.QueryCalendar(ctx, collection, &dav.CalendarQuery{
+		CompRequest: dav.CalendarCompRequest{Name: ical.CompCalendar, AllProps: true, AllComps: true},
+		CompFilter: dav.CompFilter{Name: ical.CompCalendar, Comps: []dav.CompFilter{{
+			Name:  ical.CompEvent,
+			Props: []dav.PropFilter{{Name: ical.PropUID, TextMatch: &dav.TextMatch{Text: uid}}},
+		}}},
+	})
 	if errors.Is(err, errReportPrecondition) {
 		return c.findWithoutUIDFilter(ctx, collection, uid)
 	}
