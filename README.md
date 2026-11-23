@@ -53,14 +53,11 @@ Recurring occurrences are expanded by the CalDAV server. A series UID targets th
 The container listens on port 8080. Provide the same CalDAV settings and
 `MCP_TOKEN` as above. The built-in Docker health check uses `/healthz`.
 
-On `main`, GitHub Actions publishes a commit-tagged Linux AMD64 image to
-Tencent Cloud Registry, records the digest, then updates and deploys the
-`caldav-mcp` service in the production Raw Compose using that digest.
-Set the Actions variables `DOKPLOY_URL` (the HTTPS Dokploy origin) and
-`DOKPLOY_COMPOSE_ID`, and configure the Actions secret `DOKPLOY_API_TOKEN`
-with access to read, update and deploy this Compose. If the origin is behind
-Cloudflare Access, set `DOKPLOY_ACCESS_CLIENT_ID` and
-`DOKPLOY_ACCESS_CLIENT_SECRET` to a service token authorized for the API route.
-The deploy step waits for a new successful Dokploy deployment and checks the
-configured digest.
-For rollback, restore the previous known-good digest in Dokploy and redeploy.
+On `main`, GitHub Actions tests the code, publishes a commit-tagged Linux AMD64
+image to Tencent Cloud Registry, and records the resulting digest in GitHub
+under the `caldav-production-image` deployment environment. That record signals
+that an image is available. Server-shanghai polls the record and uses its local
+Dokploy connection to update and deploy the production Raw Compose by digest.
+The `caldav-image-deploy.timer` service logs the actual deployment result on the
+host. For rollback, stop the timer during recovery and restore a known-good
+digest in Dokploy before redeploying.
