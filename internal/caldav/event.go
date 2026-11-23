@@ -122,12 +122,12 @@ func (c *Client) eventTimes(event ical.Event) (calendar.EventTime, calendar.Even
 	var err error
 	start.Time, err = decodeDateTime(first, c.zone)
 	if err != nil {
-		return start, end, backend("decode event start", err)
+		return start, end, dateTimeError("decode event start", first, err)
 	}
 	if prop := event.Props.Get(ical.PropDateTimeEnd); prop != nil {
 		end.Time, err = decodeDateTime(prop, c.zone)
 		if err != nil {
-			return start, end, backend("decode event end", err)
+			return start, end, dateTimeError("decode event end", prop, err)
 		}
 	} else {
 		var duration time.Duration
@@ -172,6 +172,19 @@ func decodeDateTime(prop *ical.Prop, fallback *time.Location) (time.Time, error)
 	return prop.DateTime(fallback)
 }
 
+// Date-time errors can contain raw property values. Report only a fixed reason.
+func dateTimeError(operation string, prop *ical.Prop, err error) error {
+	var parseErr *time.ParseError
+	reason := "unsupported iCalendar date/time value type"
+	if errors.As(err, &parseErr) {
+		reason = "invalid iCalendar date/time value"
+	} else if prop.ValueType() == ical.ValueDateTime && prop.Params.Get(ical.PropTimezoneID) != "" {
+		// go-ical resolves TZID before parsing local DATE-TIME values.
+		reason = "unresolvable iCalendar time zone"
+	}
+	return fmt.Errorf("%w: %s: %s", calendar.ErrBackend, operation, reason)
+}
+
 func (c *Client) decodeEvent(id string, event ical.Event) (calendar.Occurrence, error) {
 	start, end, err := c.eventTimes(event)
 	if err != nil {
@@ -186,7 +199,7 @@ func (c *Client) decodeEvent(id string, event ical.Event) (calendar.Occurrence, 
 	if prop := event.Props.Get(ical.PropRecurrenceID); prop != nil {
 		occurrence, err := decodeDateTime(prop, c.zone)
 		if err != nil {
-			return calendar.Occurrence{}, backend("decode recurrence ID", err)
+			return calendar.Occurrence{}, dateTimeError("decode recurrence ID", prop, err)
 		}
 		recurrence = occurrence.Format(layout)
 	}
