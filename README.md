@@ -58,6 +58,9 @@ Tencent Cloud Registry, records the digest, then updates and deploys the
 `caldav-mcp` service in the production Raw Compose using that digest.
 Set the Actions variables `DOKPLOY_URL` (the HTTPS Dokploy origin) and
 `DOKPLOY_COMPOSE_ID`, and configure the Actions secret `DOKPLOY_API_TOKEN`
-with access to read, update and deploy this Compose. The deploy step waits
-for a new successful Dokploy deployment and checks the configured digest.
+with access to read, update and deploy this Compose. If the origin is behind
+Cloudflare Access, set `DOKPLOY_ACCESS_CLIENT_ID` and
+`DOKPLOY_ACCESS_CLIENT_SECRET` to a service token authorized for the API route.
+The deploy step waits for a new successful Dokploy deployment and checks the
+configured digest.
 For rollback, restore the previous known-good digest in Dokploy and redeploy.

@@ -63,6 +63,8 @@ jobs:
           DOKPLOY_URL: ${{ vars.DOKPLOY_URL }}
           DOKPLOY_COMPOSE_ID: ${{ vars.DOKPLOY_COMPOSE_ID }}
           DOKPLOY_API_TOKEN: ${{ secrets.DOKPLOY_API_TOKEN }}
+          DOKPLOY_ACCESS_CLIENT_ID: ${{ secrets.DOKPLOY_ACCESS_CLIENT_ID }}
+          DOKPLOY_ACCESS_CLIENT_SECRET: ${{ secrets.DOKPLOY_ACCESS_CLIENT_SECRET }}
         run: |
           main_sha=$(git ls-remote --exit-code origin refs/heads/main | cut -f1)
           if [ "$main_sha" != "$GITHUB_SHA" ]; then

@@ -21,11 +21,11 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def dokploy_call(origin, token, endpoint, *, query=None, body=None):
+def dokploy_call(origin, auth_headers, endpoint, *, query=None, body=None):
     url = f"{origin}/api/{endpoint}"
     if query is not None:
         url += "?" + urlencode(query)
-    headers = {"x-api-key": token, "Accept": "application/json"}
+    headers = {**auth_headers, "Accept": "application/json"}
     data = None
     if body is not None:
         data = json.dumps(body).encode()
@@ -66,11 +66,19 @@ def deploy():
         raise DeployError("Configure the Dokploy deployment credentials and Compose ID.")
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
         raise DeployError("The image build did not return a valid digest.")
+    access_id = os.environ.get("DOKPLOY_ACCESS_CLIENT_ID")
+    access_secret = os.environ.get("DOKPLOY_ACCESS_CLIENT_SECRET")
+    if bool(access_id) != bool(access_secret):
+        raise DeployError("Configure both Cloudflare Access service token fields.")
+    auth_headers = {"x-api-key": token}
+    if access_id and access_secret:
+        auth_headers["CF-Access-Client-Id"] = access_id
+        auth_headers["CF-Access-Client-Secret"] = access_secret
     destination = f"{repository}@{digest}"
     identity = {"composeId": target}
 
     def call(endpoint, **kwargs):
-        return dokploy_call(origin, token, endpoint, **kwargs)
+        return dokploy_call(origin, auth_headers, endpoint, **kwargs)
 
     def get_compose():
         return compose_image(call("compose.one", query=identity), target, repository)
