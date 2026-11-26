@@ -63,7 +63,7 @@ func (s *Service) Available(ctx context.Context, in AvailabilityInput) (Availabi
 	if limit < 1 || limit > 100 {
 		return out, errors.New("limit must be between 1 and 100")
 	}
-	calendars, err := s.store.Calendars(ctx)
+	read, err := s.store.OccurrenceReader(ctx)
 	if err != nil {
 		return out, err
 	}
@@ -74,11 +74,7 @@ func (s *Service) Available(ctx context.Context, in AvailabilityInput) (Availabi
 			continue
 		}
 		seen[id] = true
-		if !slices.ContainsFunc(calendars, func(c Calendar) bool { return c.ID == id }) {
-			out.UnavailableCalendars = append(out.UnavailableCalendars, id)
-			continue
-		}
-		events, err := s.store.Occurrences(ctx, id, start, end)
+		events, err := read(ctx, id, start, end)
 		if err != nil {
 			if ctx.Err() != nil {
 				return out, ctx.Err()

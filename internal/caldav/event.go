@@ -18,7 +18,17 @@ import (
 )
 
 func (c *Client) Event(ctx context.Context, ref calendar.EventRef) (calendar.Event, error) {
-	resource, err := c.load(ctx, ref)
+	if strings.TrimSpace(ref.UID) == "" {
+		return calendar.Event{}, errors.New("uid is required")
+	}
+	collection, err := c.resolveCollection(ctx, ref.CalendarID)
+	if err != nil {
+		return calendar.Event{}, err
+	}
+	if collection.ReadOnly {
+		return c.subscriptionEvent(ctx, collection, ref.UID)
+	}
+	resource, err := c.load(ctx, collection.ID, ref.UID)
 	if err != nil {
 		return calendar.Event{}, err
 	}
@@ -27,7 +37,7 @@ func (c *Client) Event(ctx context.Context, ref calendar.EventRef) (calendar.Eve
 }
 
 func (c *Client) Create(ctx context.Context, id string, changes calendar.Changes) (calendar.Event, error) {
-	collection, err := c.calendarPath(ctx, id)
+	collection, err := c.writableCalendar(ctx, id)
 	if err != nil {
 		return calendar.Event{}, err
 	}
@@ -54,7 +64,7 @@ func (c *Client) Create(ctx context.Context, id string, changes calendar.Changes
 }
 
 func (c *Client) Update(ctx context.Context, ref calendar.EventRef, changes calendar.Changes) (calendar.Event, error) {
-	resource, err := c.load(ctx, ref)
+	resource, err := c.loadForWrite(ctx, ref)
 	if err != nil {
 		return calendar.Event{}, err
 	}
@@ -78,11 +88,29 @@ func (c *Client) Update(ctx context.Context, ref calendar.EventRef, changes cale
 }
 
 func (c *Client) Delete(ctx context.Context, ref calendar.EventRef) error {
-	resource, err := c.load(ctx, ref)
+	resource, err := c.loadForWrite(ctx, ref)
 	if err != nil {
 		return err
 	}
 	return c.conditionalWrite(ctx, http.MethodDelete, resource.path, resource.etag, nil)
+}
+
+func (c *Client) loadForWrite(ctx context.Context, ref calendar.EventRef) (eventResource, error) {
+	if strings.TrimSpace(ref.UID) == "" {
+		return eventResource{}, errors.New("uid is required")
+	}
+	collection, err := c.writableCalendar(ctx, ref.CalendarID)
+	if err != nil {
+		return eventResource{}, err
+	}
+	return c.load(ctx, collection, ref.UID)
+}
+
+func inWindow(event calendar.Occurrence, start, end time.Time) bool {
+	if event.StartsAt.Equal(event.EndsAt) {
+		return !event.StartsAt.Before(start) && event.StartsAt.Before(end)
+	}
+	return event.StartsAt.Before(end) && event.EndsAt.After(start)
 }
 
 func (c *Client) completeTimes(event ical.Event, changes *calendar.Changes) error {

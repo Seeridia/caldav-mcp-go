@@ -13,8 +13,9 @@ var (
 )
 
 type Calendar struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	ReadOnly bool   `json:"read_only,omitempty"`
 }
 
 type Event struct {
@@ -77,9 +78,11 @@ type Occurrence struct {
 	StartsAt, EndsAt time.Time
 }
 
+type OccurrenceReader func(context.Context, string, time.Time, time.Time) ([]Occurrence, error)
+
 type Store interface {
 	Calendars(context.Context) ([]Calendar, error)
-	Occurrences(context.Context, string, time.Time, time.Time) ([]Occurrence, error)
+	OccurrenceReader(context.Context) (OccurrenceReader, error)
 	Event(context.Context, EventRef) (Event, error)
 	Create(context.Context, string, Changes) (Event, error)
 	Update(context.Context, EventRef, Changes) (Event, error)
