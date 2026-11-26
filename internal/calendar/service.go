@@ -50,14 +50,11 @@ func (s *Service) List(ctx context.Context, in ListInput) (ListResult, error) {
 	if limit < 1 || limit > 500 {
 		return out, errors.New("limit must be between 1 and 500")
 	}
-	calendars, err := s.store.Calendars(ctx)
+	read, err := s.store.OccurrenceReader(ctx)
 	if err != nil {
 		return out, err
 	}
-	if !slices.ContainsFunc(calendars, func(c Calendar) bool { return c.ID == in.CalendarID }) {
-		return out, ErrNotFound
-	}
-	events, err := s.store.Occurrences(ctx, in.CalendarID, start, end)
+	events, err := read(ctx, in.CalendarID, start, end)
 	if err != nil {
 		return out, err
 	}

@@ -48,6 +48,21 @@ Availability defaults to 09:00–17:00 in `TZ` (UTC unless set). Override the wi
 
 Recurring occurrences are expanded by the CalDAV server. A series UID targets the master for details and updates and the entire series for deletion. Changing the time of recurring events and editing individual instances are outside this release's tool surface. Updates and deletes require a strong ETag from the CalDAV server.
 
+## iCloud URL subscriptions
+
+When CalDAV exposes a subscribed collection, `list_calendars` includes it with
+`read_only: true`. `list_events`, `get_event`, and availability read its upstream
+ICS feed. The feed must be reachable at a public HTTP(S) address without
+separate authentication. `webcal` and `webcals` addresses use HTTPS. The service
+keeps feed URLs private and sends CalDAV credentials only to the CalDAV server.
+
+A subscription that iCloud does not list is unavailable through this account.
+An exposed subscription with a missing or inaccessible feed returns a read error.
+Subscription recurrences use local expansion for `RRULE` (hourly or coarser),
+`RDATE`, `EXDATE`, and individual instance overrides. Range overrides and
+period-valued recurrence dates return a read error. Named time zones must be
+available in the service's time-zone database.
+
 ## Container deployment
 
 The container listens on port 8080. Provide the same CalDAV settings and

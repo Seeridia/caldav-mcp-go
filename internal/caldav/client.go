@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"path"
-	"slices"
 	"strings"
 	"time"
 
@@ -22,10 +21,11 @@ import (
 var errReportPrecondition = errors.New("CalDAV REPORT returned HTTP 412")
 
 type Client struct {
-	dav    *dav.Client
-	http   webdav.HTTPClient
-	origin url.URL
-	zone   *time.Location
+	dav      *dav.Client
+	feedHTTP *http.Client
+	http     webdav.HTTPClient
+	origin   url.URL
+	zone     *time.Location
 }
 
 func New(endpoint, username, password string, zone *time.Location) (*Client, error) {
@@ -50,7 +50,7 @@ func New(endpoint, username, password string, zone *time.Location) (*Client, err
 		return nil, errors.New("invalid CalDAV endpoint")
 	}
 	return &Client{
-		dav: client, http: authenticated, zone: zone,
+		dav: client, http: authenticated, feedHTTP: newFeedHTTPClient(), zone: zone,
 		origin: url.URL{Scheme: base.Scheme, Host: base.Host},
 	}, nil
 }
@@ -68,46 +68,6 @@ func (c reportClient) Do(req *http.Request) (*http.Response, error) {
 	return res, err
 }
 
-func (c *Client) Calendars(ctx context.Context) ([]calendar.Calendar, error) {
-	principal, err := c.dav.FindCurrentUserPrincipal(ctx)
-	if err != nil {
-		return nil, backend("find principal", err)
-	}
-	home, err := c.dav.FindCalendarHomeSet(ctx, principal)
-	if err != nil {
-		return nil, backend("find calendar home", err)
-	}
-	collections, err := c.dav.FindCalendars(ctx, home)
-	if err != nil {
-		return nil, backend("list calendars", err)
-	}
-	result := make([]calendar.Calendar, 0, len(collections))
-	for _, collection := range collections {
-		if len(collection.SupportedComponentSet) > 0 && !slices.Contains(collection.SupportedComponentSet, ical.CompEvent) {
-			continue
-		}
-		result = append(result, calendar.Calendar{ID: collection.Path, Name: collection.Name})
-	}
-	slices.SortFunc(result, func(a, b calendar.Calendar) int { return strings.Compare(a.ID, b.ID) })
-	return result, nil
-}
-
-func (c *Client) calendarPath(ctx context.Context, id string) (string, error) {
-	if id == "" {
-		return "", errors.New("calendar_id is required")
-	}
-	calendars, err := c.Calendars(ctx)
-	if err != nil {
-		return "", err
-	}
-	for _, candidate := range calendars {
-		if candidate.ID == id {
-			return id, nil
-		}
-	}
-	return "", calendar.ErrNotFound
-}
-
 func backend(operation string, err error) error {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
@@ -115,8 +75,26 @@ func backend(operation string, err error) error {
 	return fmt.Errorf("%w: %s", calendar.ErrBackend, operation)
 }
 
-func (c *Client) Occurrences(ctx context.Context, id string, start, end time.Time) ([]calendar.Occurrence, error) {
-	// The service resolves the calendar ID before calling Occurrences.
+func (c *Client) OccurrenceReader(ctx context.Context) (calendar.OccurrenceReader, error) {
+	collections, err := c.collections(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return func(ctx context.Context, id string, start, end time.Time) ([]calendar.Occurrence, error) {
+		for _, collection := range collections {
+			if collection.ID != id {
+				continue
+			}
+			if collection.ReadOnly {
+				return c.subscriptionOccurrences(ctx, collection, start, end)
+			}
+			return c.reportOccurrences(ctx, id, start, end)
+		}
+		return nil, calendar.ErrNotFound
+	}, nil
+}
+
+func (c *Client) reportOccurrences(ctx context.Context, id string, start, end time.Time) ([]calendar.Occurrence, error) {
 	// DATE and floating DATE-TIME can use different time zones on the
 	// server. Widen discovery and apply the exact window locally.
 	from, to := start.UTC().Add(-24*time.Hour), end.UTC().Add(24*time.Hour)
@@ -138,10 +116,7 @@ func (c *Client) Occurrences(ctx context.Context, id string, start, end time.Tim
 			if err != nil {
 				return false, err
 			}
-			overlaps := occurrence.StartsAt.Before(end) && occurrence.EndsAt.After(start)
-			instant := occurrence.StartsAt.Equal(occurrence.EndsAt) &&
-				!occurrence.StartsAt.Before(start) && occurrence.StartsAt.Before(end)
-			if overlaps || instant {
+			if inWindow(occurrence, start, end) {
 				result = append(result, occurrence)
 			}
 		}
@@ -228,27 +203,20 @@ type eventResource struct {
 	etag     string
 }
 
-func (c *Client) load(ctx context.Context, ref calendar.EventRef) (eventResource, error) {
-	if strings.TrimSpace(ref.UID) == "" {
-		return eventResource{}, errors.New("uid is required")
-	}
-	collection, err := c.calendarPath(ctx, ref.CalendarID)
-	if err != nil {
-		return eventResource{}, err
-	}
-	if !strings.ContainsAny(ref.UID, "/\\") {
+func (c *Client) load(ctx context.Context, collection, uid string) (eventResource, error) {
+	if !strings.ContainsAny(uid, "/\\") {
 		// New resources and many existing calendars use UID.ics as the path.
 		// readEvent verifies the UID before callers can update or delete it.
-		event, err := c.readEvent(ctx, path.Join(collection, ref.UID+".ics"), ref.UID)
+		event, err := c.readEvent(ctx, path.Join(collection, uid+".ics"), uid)
 		if !errors.Is(err, calendar.ErrNotFound) {
 			return event, err
 		}
 	}
-	resourcePath, err := c.find(ctx, collection, ref.UID)
+	resourcePath, err := c.find(ctx, collection, uid)
 	if err != nil {
 		return eventResource{}, err
 	}
-	return c.readEvent(ctx, resourcePath, ref.UID)
+	return c.readEvent(ctx, resourcePath, uid)
 }
 
 func (c *Client) readEvent(ctx context.Context, resourcePath, uid string) (eventResource, error) {

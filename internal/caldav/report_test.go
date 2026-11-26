@@ -48,7 +48,7 @@ func TestOccurrencesDateTimeDecoding(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, span := range []time.Duration{12 * time.Hour, 24 * time.Hour} {
-				events, err := client.Occurrences(t.Context(), "/calendar/", windowStart, windowStart.Add(span))
+				events, err := client.reportOccurrences(t.Context(), "/calendar/", windowStart, windowStart.Add(span))
 				if tc.reason != "" {
 					want := fmt.Sprintf("%v: decode event start: %s", calendar.ErrBackend, tc.reason)
 					if !errors.Is(err, calendar.ErrBackend) || err.Error() != want || events != nil {
